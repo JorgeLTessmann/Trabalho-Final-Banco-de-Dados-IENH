@@ -4,7 +4,7 @@
 **Banco de dados:** MySQL 8.0.16 ou superior  
 **Versão do documento:** 1.0  
 **Data:** 24/11/2026  
-**Responsáveis:** Integrantes do grupo
+**Responsáveis:** Jorge Luiz Tessmann, Guilherme dos Passos Persch, Mateus Arthur da Silva de Freitas, João Gabriel Guimarães, Leonardo Metz, Francisco Ferreira Telles da Silva
 
 ---
 
