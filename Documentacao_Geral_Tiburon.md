@@ -410,6 +410,6 @@ SELECT FN_MAIOR_EMPRESTIMO_MES('2026-11-01') AS MAIOR_EMPRESTIMO;
 
 ## 10. Considerações finais
 
-O arquivo `Tiburon_organizado.sql` concentra a estrutura do banco de dados, as relações entre as tabelas, as regras automatizadas, as consultas consolidadas e as rotinas de consulta e cálculo. Esta documentação serve como referência para entender e utilizar os objetos implementados no script.
+O arquivo `Tiburon.sql` concentra a estrutura do banco de dados, as relações entre as tabelas, as regras automatizadas, as consultas consolidadas e as rotinas de consulta e cálculo. Esta documentação serve como referência para entender e utilizar os objetos implementados no script.
 
 A documentação descreve o conteúdo do SQL, mas não substitui a execução e a validação do script em um servidor MySQL.
