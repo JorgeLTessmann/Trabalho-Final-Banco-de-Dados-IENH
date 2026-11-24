@@ -1,32 +1,3 @@
-/* ============================================================================
-   TIBURON - SCRIPT PRINCIPAL DO BANCO DE DADOS
-   Compatibilidade prevista: MySQL 8.0.16 ou superior
-
-   ATENCAO:
-   - Este arquivo recria as tabelas e APAGA os dados existentes nelas.
-   - Execute em ambiente de desenvolvimento/teste antes de utilizar qualquer
-     banco com dados importantes.
-   - O script concentra a implementacao SQL do projeto.
-   - Backup com mysqldump, configuracao de binlogs e replicacao dependem de
-     configuracoes/comandos do servidor e estao descritos nos comentarios finais.
-
-   CONSOLIDACAO DOS ARQUIVOS ENVIADOS:
-   - Foram mantidas as tabelas e os campos do script SQL original sempre que
-     possivel.
-   - USUARIOS foi mantida porque aparece no SQL original e no plano de recovery.
-   - CONTATOSCELULARES foi incluida porque aparece no dicionario de dados.
-   - CONTATOSCHAT foi incluida porque MENSAGENS depende dela e ela aparece no
-     plano de recovery.
-   - MATCHES foi corrigida: o SQL original criava essa tabela, mas suas FKs
-     apontavam para campos/tabela que nao existiam.
-   - Em FOTOS, o SQL original usava TIPO para finalidade (PERFIL/CARD/OUTROS),
-     enquanto o dicionario usava TIPO para formato (JPEG/PNG). Para preservar
-     as duas informacoes, foram separados FINALIDADE e FORMATO, e foi incluido
-     TAMANHO conforme o dicionario.
-   - Em REGIOES, PAIS foi definido como VARCHAR(100), seguindo o dicionario
-     (nome do pais), em vez de CHAR(3), usado no SQL original (sigla).
-   ============================================================================ */
-
 CREATE DATABASE IF NOT EXISTS TIBURON
   CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
@@ -729,28 +700,3 @@ GROUP BY
    SELECT * FROM VW_EMPRESTIMOS_DETALHADOS;
    SELECT * FROM HISTORICO_ALTERACOES ORDER BY DATA_HORA DESC;
    ============================================================================ */
-
-/* ============================================================================
-   11. BACKUP E BINLOGS - COMANDOS COMPLEMENTARES (NAO SAO SQL)
-
-   Backup logico completo, executado no terminal do sistema:
-   mysqldump -u USUARIO -p --databases TIBURON --routines --triggers --events > tiburon_backup.sql
-
-   Restauracao do backup, executada no terminal:
-   mysql -u USUARIO -p < tiburon_backup.sql
-
-   Verificar pelo SQL se o servidor possui binlog habilitado:
-   SHOW VARIABLES LIKE 'log_bin';
-   SHOW VARIABLES LIKE 'binlog_format';
-   SHOW BINARY LOGS;
-
-   A ativacao do log_bin normalmente exige configuracao no arquivo de configuracao
-   do MySQL e reinicializacao do servico. A recuperacao ponto a ponto utiliza a
-   ferramenta mysqlbinlog no terminal; nao pode ser implementada apenas com SQL.
-
-   A replicacao para um segundo servidor tambem exige configuracao dos servidores,
-   usuarios/permissoes de replicacao e parametros de rede. Este script nao cria
-   nem configura um servidor replica.
-   ============================================================================ */
-
-/* FIM DO SCRIPT TIBURON */
