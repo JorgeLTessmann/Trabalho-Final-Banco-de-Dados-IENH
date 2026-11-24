@@ -1,6 +1,5 @@
 # PLANO DE RECOVERY — TIBURÓN
 
----
 
 **Versão:** 1.0  
 **Data:** 24/11/2026  
