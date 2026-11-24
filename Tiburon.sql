@@ -5,12 +5,12 @@ CREATE DATABASE IF NOT EXISTS TIBURON
 USE TIBURON;
 SET NAMES utf8mb4;
 
-/* ============================================================================
-   0. LIMPEZA PARA RECRIACAO DO BANCO
-   ============================================================================ */
-
+-- LIMPEZA DOS OBJETOS EXISTENTES
 SET FOREIGN_KEY_CHECKS = 0;
-
+DROP PROCEDURE IF EXISTS SP_LISTAR_PARCELAS_EMPRESTIMO;
+DROP PROCEDURE IF EXISTS SP_RANKING_PAGADORES_POR_AGIOTA;
+DROP FUNCTION IF EXISTS FN_VALOR_RESTANTE_EMPRESTIMO;
+DROP FUNCTION IF EXISTS FN_MAIOR_EMPRESTIMO_MES;
 DROP VIEW IF EXISTS VW_EMPRESTIMOS_DETALHADOS;
 DROP VIEW IF EXISTS VW_PERFIL_PESSOAS;
 
@@ -50,9 +50,7 @@ DROP TABLE IF EXISTS REGIOES;
 
 SET FOREIGN_KEY_CHECKS = 1;
 
-/* ============================================================================
-   1. LOCALIZACAO E CADASTRO DE PESSOAS
-   ============================================================================ */
+-- TABELAS: CADASTRO E PESSOAS
 
 CREATE TABLE REGIOES (
     ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador unico da regiao',
@@ -96,9 +94,7 @@ CREATE TABLE USUARIOS (
 ) ENGINE=InnoDB
   COMMENT='Armazena as credenciais e contas de acesso ao sistema';
 
-/* ============================================================================
-   2. BENS, FOTOS E CONTATOS
-   ============================================================================ */
+-- TABELAS: BENS, FOTOS E CONTATOS
 
 CREATE TABLE BENS (
     ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador unico do bem',
@@ -150,9 +146,7 @@ CREATE TABLE CONTATOSCELULARES (
 ) ENGINE=InnoDB
   COMMENT='Armazena contatos celulares associados a uma pessoa';
 
-/* ============================================================================
-   3. LIKES, MATCHES E CHAT
-   ============================================================================ */
+-- TABELAS: LIKES, MATCHES E CHAT
 
 CREATE TABLE LIKES (
     ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador unico do like',
@@ -228,9 +222,7 @@ CREATE TABLE MENSAGENS (
 ) ENGINE=InnoDB
   COMMENT='Armazena as mensagens trocadas entre as pessoas no chat';
 
-/* ============================================================================
-   4. CONDICOES, EMPRESTIMOS E PARCELAS
-   ============================================================================ */
+-- TABELAS: CONDICOES, EMPRESTIMOS E PARCELAS
 
 CREATE TABLE CONDICOES (
     ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador das condicoes',
@@ -303,9 +295,7 @@ CREATE TABLE PARCELAS (
 ) ENGINE=InnoDB
   COMMENT='Armazena as parcelas dos emprestimos';
 
-/* ============================================================================
-   5. INTERACOES E AVALIACOES
-   ============================================================================ */
+-- TABELAS: INTERACOES E AVALIACOES
 
 CREATE TABLE INTERACOES (
     ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador da interacao',
@@ -363,9 +353,7 @@ CREATE TABLE AVALIACOES (
 ) ENGINE=InnoDB
   COMMENT='Armazena as avaliacoes realizadas entre pessoas';
 
-/* ============================================================================
-   6. PACOTES E UTILIZACAO
-   ============================================================================ */
+-- TABELAS: PACOTES
 
 CREATE TABLE PACOTES (
     ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador do pacote',
@@ -404,12 +392,7 @@ CREATE TABLE USOPACOTES (
 ) ENGINE=InnoDB
   COMMENT='Registra a utilizacao dos pacotes pelas pessoas';
 
-/* ============================================================================
-   7. HISTORICO DE ALTERACOES
-   A tabela registra operacoes de INSERT, UPDATE e DELETE nas tabelas principais.
-   O historico nao possui FK intencionalmente, para continuar existindo mesmo
-   quando o registro original for excluido.
-   ============================================================================ */
+-- TABELA: HISTORICO DE ALTERACOES
 
 CREATE TABLE HISTORICO_ALTERACOES (
     ID BIGINT NOT NULL AUTO_INCREMENT COMMENT 'Identificador do registro de historico',
@@ -426,13 +409,10 @@ CREATE TABLE HISTORICO_ALTERACOES (
 ) ENGINE=InnoDB
   COMMENT='Registra alteracoes realizadas nas tabelas principais';
 
-/* ============================================================================
-   8. TRIGGERS
-   ============================================================================ */
+-- TRIGGERS
 
 DELIMITER $$
 
-/* Desativa a conta de acesso quando a pessoa e desativada. */
 CREATE TRIGGER TPESSOAS_DESATIVAR_USUARIO
 AFTER UPDATE ON PESSOAS
 FOR EACH ROW
@@ -444,7 +424,6 @@ BEGIN
     END IF;
 END$$
 
-/* Historico de PESSOAS. */
 CREATE TRIGGER TPESSOAS_AUDITORIA_AI
 AFTER INSERT ON PESSOAS
 FOR EACH ROW
@@ -487,7 +466,6 @@ BEGIN
                      'STATUS', OLD.STATUS));
 END$$
 
-/* Historico de EMPRESTIMOS. */
 CREATE TRIGGER TEMPRESTIMOS_AUDITORIA_AI
 AFTER INSERT ON EMPRESTIMOS
 FOR EACH ROW
@@ -538,7 +516,6 @@ BEGIN
                      'DATAINICIO', OLD.DATAINICIO, 'DATAFIM', OLD.DATAFIM));
 END$$
 
-/* Historico de PARCELAS. */
 CREATE TRIGGER TPARCELAS_AUDITORIA_AI
 AFTER INSERT ON PARCELAS
 FOR EACH ROW
@@ -589,7 +566,6 @@ BEGIN
                      'DATAPAGAMENTO', OLD.DATAPAGAMENTO));
 END$$
 
-/* Gera um match quando existem likes nos dois sentidos. */
 CREATE TRIGGER TLIKES_GERAR_MATCH
 AFTER INSERT ON LIKES
 FOR EACH ROW
@@ -608,7 +584,6 @@ BEGIN
     END IF;
 END$$
 
-/* Cria automaticamente uma conversa para cada novo match. */
 CREATE TRIGGER TMATCHES_CRIAR_CHAT
 AFTER INSERT ON MATCHES
 FOR EACH ROW
@@ -616,7 +591,6 @@ BEGIN
     INSERT INTO CONTATOSCHAT (IDMATCH) VALUES (NEW.ID);
 END$$
 
-/* Impede que uma pessoa de fora do match envie mensagem naquela conversa. */
 CREATE TRIGGER TMENSAGENS_VALIDAR_REMETENTE
 BEFORE INSERT ON MENSAGENS
 FOR EACH ROW
@@ -638,9 +612,7 @@ END$$
 
 DELIMITER ;
 
-/* ============================================================================
-   9. VIEWS DE INTEGRACAO ENTRE SISTEMAS
-   ============================================================================ */
+-- VIEWS DE INTEGRACAO
 
 CREATE OR REPLACE VIEW VW_PERFIL_PESSOAS AS
 SELECT
@@ -688,15 +660,165 @@ GROUP BY
     E.ID, D.ID, D.NOME, A.ID, A.NOME, C.ID, C.CONDICAODESCRICAO,
     E.STATUSPAGAMENTO, E.QUANTIDADEPARCELAS, E.VALORTOTAL,
     E.TAXAJUROS, E.DATAINICIO, E.DATAFIM;
+-- PROCEDURES E FUNCTIONS
+DELIMITER $$
 
-/* ============================================================================
-   10. CONSULTAS PARA CONFERENCIA
-   Execute estas consultas depois de executar o script:
+CREATE PROCEDURE SP_LISTAR_PARCELAS_EMPRESTIMO(
+    IN P_IDEMPRESTIMO INT
+)
+BEGIN
+    SELECT
+        ID AS IDPARCELA,
+        IDEMPRESTIMO,
+        STATUSPAGAMENTO,
+        VALORPARCELA,
+        DATAVENCIMENTO,
+        DATAPAGAMENTO
+    FROM PARCELAS
+    WHERE IDEMPRESTIMO = P_IDEMPRESTIMO
+    ORDER BY DATAVENCIMENTO, ID;
+END$$
 
-   SHOW TABLES;
-   SHOW FULL TABLES WHERE TABLE_TYPE = 'VIEW';
-   SHOW TRIGGERS;
-   SELECT * FROM VW_PERFIL_PESSOAS;
-   SELECT * FROM VW_EMPRESTIMOS_DETALHADOS;
-   SELECT * FROM HISTORICO_ALTERACOES ORDER BY DATA_HORA DESC;
-   ============================================================================ */
+CREATE FUNCTION FN_VALOR_RESTANTE_EMPRESTIMO(
+    P_IDEMPRESTIMO INT
+)
+RETURNS DECIMAL(12,2)
+NOT DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE V_VALOR_RESTANTE DECIMAL(12,2) DEFAULT 0.00;
+
+    SELECT COALESCE(SUM(VALORPARCELA), 0.00)
+      INTO V_VALOR_RESTANTE
+      FROM PARCELAS
+     WHERE IDEMPRESTIMO = P_IDEMPRESTIMO
+       AND STATUSPAGAMENTO <> 'PAGO';
+
+    RETURN V_VALOR_RESTANTE;
+END$$
+
+CREATE PROCEDURE SP_RANKING_PAGADORES_POR_AGIOTA()
+BEGIN
+    SELECT
+        ROW_NUMBER() OVER (
+            PARTITION BY R.IDAGIOTA
+            ORDER BY
+                R.TAXA_PONTUALIDADE DESC,
+                R.PARCELAS_EM_ATRASO ASC,
+                R.VALOR_PAGO DESC
+        ) AS POSICAO_PAGADOR,
+        R.IDAGIOTA,
+        R.NOME_AGIOTA,
+        R.IDOTARIO,
+        R.NOME_OTARIO,
+        R.TOTAL_PARCELAS_AVALIADAS,
+        R.PARCELAS_PAGAS_NO_PRAZO,
+        R.PARCELAS_PAGAS_COM_ATRASO,
+        R.PARCELAS_EM_ATRASO,
+        R.VALOR_PAGO,
+        R.TAXA_PONTUALIDADE
+    FROM (
+        SELECT
+            A.ID AS IDAGIOTA,
+            A.NOME AS NOME_AGIOTA,
+            O.ID AS IDOTARIO,
+            O.NOME AS NOME_OTARIO,
+            SUM(
+                CASE
+                    WHEN PA.STATUSPAGAMENTO = 'PAGO' OR PA.DATAVENCIMENTO <= CURDATE()
+                    THEN 1 ELSE 0
+                END
+            ) AS TOTAL_PARCELAS_AVALIADAS,
+            SUM(
+                CASE
+                    WHEN PA.STATUSPAGAMENTO = 'PAGO'
+                     AND DATE(PA.DATAPAGAMENTO) <= PA.DATAVENCIMENTO
+                    THEN 1 ELSE 0
+                END
+            ) AS PARCELAS_PAGAS_NO_PRAZO,
+            SUM(
+                CASE
+                    WHEN PA.STATUSPAGAMENTO = 'PAGO'
+                     AND DATE(PA.DATAPAGAMENTO) > PA.DATAVENCIMENTO
+                    THEN 1 ELSE 0
+                END
+            ) AS PARCELAS_PAGAS_COM_ATRASO,
+            SUM(
+                CASE
+                    WHEN PA.ID IS NOT NULL
+                     AND PA.DATAVENCIMENTO < CURDATE()
+                     AND PA.STATUSPAGAMENTO <> 'PAGO'
+                    THEN 1 ELSE 0
+                END
+            ) AS PARCELAS_EM_ATRASO,
+            COALESCE(
+                SUM(CASE WHEN PA.STATUSPAGAMENTO = 'PAGO' THEN PA.VALORPARCELA ELSE 0 END),
+                0.00
+            ) AS VALOR_PAGO,
+            ROUND(
+                100.0 * SUM(
+                    CASE
+                        WHEN PA.STATUSPAGAMENTO = 'PAGO'
+                         AND DATE(PA.DATAPAGAMENTO) <= PA.DATAVENCIMENTO
+                        THEN 1 ELSE 0
+                    END
+                ) / NULLIF(
+                    SUM(
+                        CASE
+                            WHEN PA.STATUSPAGAMENTO = 'PAGO' OR PA.DATAVENCIMENTO <= CURDATE()
+                            THEN 1 ELSE 0
+                        END
+                    ),
+                    0
+                ),
+                2
+            ) AS TAXA_PONTUALIDADE
+        FROM EMPRESTIMOS E
+        INNER JOIN PESSOAS A
+            ON A.ID = E.IDAGIOTA
+           AND A.TIPO = 'A'
+        INNER JOIN PESSOAS O
+            ON O.ID = E.IDDEVEDOR
+           AND O.TIPO = 'O'
+        INNER JOIN PARCELAS PA
+            ON PA.IDEMPRESTIMO = E.ID
+        GROUP BY A.ID, A.NOME, O.ID, O.NOME
+        HAVING SUM(
+            CASE
+                WHEN PA.STATUSPAGAMENTO = 'PAGO' OR PA.DATAVENCIMENTO <= CURDATE()
+                THEN 1 ELSE 0
+            END
+        ) > 0
+    ) AS R
+    ORDER BY R.IDAGIOTA, POSICAO_PAGADOR;
+END$$
+
+CREATE FUNCTION FN_MAIOR_EMPRESTIMO_MES(
+    P_DATA_REFERENCIA DATE
+)
+RETURNS DECIMAL(12,2)
+NOT DETERMINISTIC
+READS SQL DATA
+BEGIN
+    DECLARE V_MAIOR_EMPRESTIMO DECIMAL(12,2) DEFAULT 0.00;
+    DECLARE V_INICIO_MES DATE;
+
+    IF P_DATA_REFERENCIA IS NULL THEN
+        RETURN 0.00;
+    END IF;
+
+    SET V_INICIO_MES = DATE_SUB(
+        P_DATA_REFERENCIA,
+        INTERVAL DAYOFMONTH(P_DATA_REFERENCIA) - 1 DAY
+    );
+
+    SELECT COALESCE(MAX(VALORTOTAL), 0.00)
+      INTO V_MAIOR_EMPRESTIMO
+      FROM EMPRESTIMOS
+     WHERE DATAINICIO >= V_INICIO_MES
+       AND DATAINICIO < DATE_ADD(V_INICIO_MES, INTERVAL 1 MONTH);
+
+    RETURN V_MAIOR_EMPRESTIMO;
+END$$
+
+DELIMITER ;
