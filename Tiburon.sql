@@ -1,0 +1,756 @@
+/* ============================================================================
+   TIBURON - SCRIPT PRINCIPAL DO BANCO DE DADOS
+   Compatibilidade prevista: MySQL 8.0.16 ou superior
+
+   ATENCAO:
+   - Este arquivo recria as tabelas e APAGA os dados existentes nelas.
+   - Execute em ambiente de desenvolvimento/teste antes de utilizar qualquer
+     banco com dados importantes.
+   - O script concentra a implementacao SQL do projeto.
+   - Backup com mysqldump, configuracao de binlogs e replicacao dependem de
+     configuracoes/comandos do servidor e estao descritos nos comentarios finais.
+
+   CONSOLIDACAO DOS ARQUIVOS ENVIADOS:
+   - Foram mantidas as tabelas e os campos do script SQL original sempre que
+     possivel.
+   - USUARIOS foi mantida porque aparece no SQL original e no plano de recovery.
+   - CONTATOSCELULARES foi incluida porque aparece no dicionario de dados.
+   - CONTATOSCHAT foi incluida porque MENSAGENS depende dela e ela aparece no
+     plano de recovery.
+   - MATCHES foi corrigida: o SQL original criava essa tabela, mas suas FKs
+     apontavam para campos/tabela que nao existiam.
+   - Em FOTOS, o SQL original usava TIPO para finalidade (PERFIL/CARD/OUTROS),
+     enquanto o dicionario usava TIPO para formato (JPEG/PNG). Para preservar
+     as duas informacoes, foram separados FINALIDADE e FORMATO, e foi incluido
+     TAMANHO conforme o dicionario.
+   - Em REGIOES, PAIS foi definido como VARCHAR(100), seguindo o dicionario
+     (nome do pais), em vez de CHAR(3), usado no SQL original (sigla).
+   ============================================================================ */
+
+CREATE DATABASE IF NOT EXISTS TIBURON
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+USE TIBURON;
+SET NAMES utf8mb4;
+
+/* ============================================================================
+   0. LIMPEZA PARA RECRIACAO DO BANCO
+   ============================================================================ */
+
+SET FOREIGN_KEY_CHECKS = 0;
+
+DROP VIEW IF EXISTS VW_EMPRESTIMOS_DETALHADOS;
+DROP VIEW IF EXISTS VW_PERFIL_PESSOAS;
+
+DROP TRIGGER IF EXISTS TPESSOAS_DESATIVAR_USUARIO;
+DROP TRIGGER IF EXISTS TPESSOAS_AUDITORIA_AI;
+DROP TRIGGER IF EXISTS TPESSOAS_AUDITORIA_AU;
+DROP TRIGGER IF EXISTS TPESSOAS_AUDITORIA_AD;
+DROP TRIGGER IF EXISTS TEMPRESTIMOS_AUDITORIA_AI;
+DROP TRIGGER IF EXISTS TEMPRESTIMOS_AUDITORIA_AU;
+DROP TRIGGER IF EXISTS TEMPRESTIMOS_AUDITORIA_AD;
+DROP TRIGGER IF EXISTS TPARCELAS_AUDITORIA_AI;
+DROP TRIGGER IF EXISTS TPARCELAS_AUDITORIA_AU;
+DROP TRIGGER IF EXISTS TPARCELAS_AUDITORIA_AD;
+DROP TRIGGER IF EXISTS TLIKES_GERAR_MATCH;
+DROP TRIGGER IF EXISTS TMATCHES_CRIAR_CHAT;
+DROP TRIGGER IF EXISTS TMENSAGENS_VALIDAR_REMETENTE;
+
+DROP TABLE IF EXISTS HISTORICO_ALTERACOES;
+DROP TABLE IF EXISTS USOPACOTES;
+DROP TABLE IF EXISTS PACOTES;
+DROP TABLE IF EXISTS AVALIACOES;
+DROP TABLE IF EXISTS AVALIACOESMOTIVOS;
+DROP TABLE IF EXISTS INTERACOES;
+DROP TABLE IF EXISTS PARCELAS;
+DROP TABLE IF EXISTS EMPRESTIMOS;
+DROP TABLE IF EXISTS CONDICOES;
+DROP TABLE IF EXISTS MENSAGENS;
+DROP TABLE IF EXISTS CONTATOSCHAT;
+DROP TABLE IF EXISTS MATCHES;
+DROP TABLE IF EXISTS LIKES;
+DROP TABLE IF EXISTS CONTATOSCELULARES;
+DROP TABLE IF EXISTS FOTOS;
+DROP TABLE IF EXISTS BENS;
+DROP TABLE IF EXISTS USUARIOS;
+DROP TABLE IF EXISTS PESSOAS;
+DROP TABLE IF EXISTS REGIOES;
+
+SET FOREIGN_KEY_CHECKS = 1;
+
+/* ============================================================================
+   1. LOCALIZACAO E CADASTRO DE PESSOAS
+   ============================================================================ */
+
+CREATE TABLE REGIOES (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador unico da regiao',
+    CIDADE VARCHAR(100) NOT NULL COMMENT 'Nome da cidade',
+    UF CHAR(2) NOT NULL COMMENT 'Sigla do estado',
+    PAIS VARCHAR(100) NOT NULL COMMENT 'Nome do pais',
+    PRIMARY KEY (ID),
+    KEY IDX_REGIOES_CIDADE_UF (CIDADE, UF)
+) ENGINE=InnoDB
+  COMMENT='Armazena as regioes geograficas cadastradas';
+
+CREATE TABLE PESSOAS (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador unico da pessoa',
+    NOME VARCHAR(255) NOT NULL COMMENT 'Nome da pessoa',
+    TELEFONE VARCHAR(20) NOT NULL COMMENT 'Telefone da pessoa',
+    IDREGIAO INT NOT NULL COMMENT 'Regiao onde a pessoa esta localizada',
+    TIPO ENUM('A', 'O') NOT NULL COMMENT 'A para agiota e O para otario/devedor',
+    STATUS ENUM('ATIVO', 'DESATIVADO') NOT NULL DEFAULT 'ATIVO' COMMENT 'Situacao da pessoa',
+    PRIMARY KEY (ID),
+    KEY IDX_PESSOAS_REGIAO (IDREGIAO),
+    CONSTRAINT FK_PESSOAS_REGIOES
+        FOREIGN KEY (IDREGIAO) REFERENCES REGIOES(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB
+  COMMENT='Armazena os dados pessoais das pessoas cadastradas';
+
+CREATE TABLE USUARIOS (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador unico do usuario',
+    IDPESSOA INT NOT NULL COMMENT 'Pessoa vinculada ao usuario',
+    EMAIL VARCHAR(255) NOT NULL COMMENT 'Email utilizado para acessar o sistema',
+    SENHA VARCHAR(255) NOT NULL COMMENT 'Hash da senha do usuario, nunca a senha em texto puro',
+    STATUS ENUM('ATIVO', 'INATIVO', 'BLOQUEADO') NOT NULL DEFAULT 'ATIVO' COMMENT 'Situacao da conta',
+    DATA_CADASTRO DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Data de cadastro',
+    ULTIMO_ACESSO DATETIME NULL COMMENT 'Data do ultimo acesso',
+    PRIMARY KEY (ID),
+    UNIQUE KEY UK_USUARIOS_PESSOA (IDPESSOA),
+    UNIQUE KEY UK_USUARIOS_EMAIL (EMAIL),
+    CONSTRAINT FK_USUARIOS_PESSOAS
+        FOREIGN KEY (IDPESSOA) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB
+  COMMENT='Armazena as credenciais e contas de acesso ao sistema';
+
+/* ============================================================================
+   2. BENS, FOTOS E CONTATOS
+   ============================================================================ */
+
+CREATE TABLE BENS (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador unico do bem',
+    IDPESSOA INT NOT NULL COMMENT 'Pessoa proprietaria do bem',
+    TIPO VARCHAR(50) NOT NULL COMMENT 'Tipo do bem, por exemplo imovel ou veiculo',
+    VALORESTIMADO DECIMAL(12,2) NOT NULL COMMENT 'Valor estimado do bem',
+    DESCRICAO TEXT NULL COMMENT 'Descricao e caracteristicas do bem',
+    STATUSGARANTIA ENUM('S', 'N') NULL COMMENT 'S para sim e N para nao',
+    VENCIMENTOGARANTIA DATE NULL COMMENT 'Data de vencimento da garantia, quando aplicavel',
+    PRIMARY KEY (ID),
+    KEY IDX_BENS_PESSOA (IDPESSOA),
+    CONSTRAINT FK_BENS_PESSOAS
+        FOREIGN KEY (IDPESSOA) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT CK_BENS_VALOR CHECK (VALORESTIMADO >= 0)
+) ENGINE=InnoDB
+  COMMENT='Armazena os bens pertencentes as pessoas';
+
+CREATE TABLE FOTOS (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador unico da foto',
+    IDPESSOA INT NOT NULL COMMENT 'Pessoa responsavel pela foto',
+    FINALIDADE ENUM('PERFIL', 'CARD', 'OUTROS') NOT NULL COMMENT 'Finalidade da imagem',
+    FORMATO VARCHAR(20) NOT NULL COMMENT 'Formato do arquivo, por exemplo JPEG ou PNG',
+    TAMANHO INT NOT NULL COMMENT 'Tamanho do arquivo em bytes',
+    CONTEUDO LONGBLOB NOT NULL COMMENT 'Conteudo binario da imagem',
+    PRIMARY KEY (ID),
+    KEY IDX_FOTOS_PESSOA (IDPESSOA),
+    CONSTRAINT FK_FOTOS_PESSOAS
+        FOREIGN KEY (IDPESSOA) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT CK_FOTOS_TAMANHO CHECK (TAMANHO >= 0)
+) ENGINE=InnoDB
+  COMMENT='Armazena as fotos cadastradas pelas pessoas';
+
+CREATE TABLE CONTATOSCELULARES (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador unico do contato cadastrado',
+    IDPESSOA INT NOT NULL COMMENT 'Pessoa a qual o contato pertence',
+    NOMECONTATO VARCHAR(255) NOT NULL COMMENT 'Nome utilizado para identificar o contato',
+    TELEFONECONTATO VARCHAR(20) NOT NULL COMMENT 'Numero de telefone do contato',
+    IDFOTO INT NULL COMMENT 'Foto associada ao contato, quando aplicavel',
+    PRIMARY KEY (ID),
+    KEY IDX_CONTATOSCELULARES_PESSOA (IDPESSOA),
+    CONSTRAINT FK_CONTATOSCELULARES_PESSOAS
+        FOREIGN KEY (IDPESSOA) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT FK_CONTATOSCELULARES_FOTOS
+        FOREIGN KEY (IDFOTO) REFERENCES FOTOS(ID)
+        ON UPDATE CASCADE ON DELETE SET NULL
+) ENGINE=InnoDB
+  COMMENT='Armazena contatos celulares associados a uma pessoa';
+
+/* ============================================================================
+   3. LIKES, MATCHES E CHAT
+   ============================================================================ */
+
+CREATE TABLE LIKES (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador unico do like',
+    IDPESSOA_LIKE INT NOT NULL COMMENT 'Pessoa responsavel por dar o like',
+    IDPESSOA_RECEBEU INT NOT NULL COMMENT 'Pessoa que recebeu o like',
+    DATA_LIKE DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Data e horario do like',
+    PRIMARY KEY (ID),
+    UNIQUE KEY UK_LIKES_PAR (IDPESSOA_LIKE, IDPESSOA_RECEBEU),
+    KEY IDX_LIKES_RECEBEU (IDPESSOA_RECEBEU),
+    CONSTRAINT FK_LIKES_QUEM_DEU
+        FOREIGN KEY (IDPESSOA_LIKE) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT FK_LIKES_QUEM_RECEBEU
+        FOREIGN KEY (IDPESSOA_RECEBEU) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT CK_LIKES_PESSOAS_DIFERENTES CHECK (IDPESSOA_LIKE <> IDPESSOA_RECEBEU)
+) ENGINE=InnoDB
+  COMMENT='Registra os likes enviados entre pessoas';
+
+CREATE TABLE MATCHES (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador unico do match',
+    IDPESSOA_1 INT NOT NULL COMMENT 'Primeira pessoa do match',
+    IDPESSOA_2 INT NOT NULL COMMENT 'Segunda pessoa do match',
+    IDFOTO INT NULL COMMENT 'Foto associada ao match, quando aplicavel',
+    DATA_MATCH DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Data e horario em que o match foi criado',
+    PRIMARY KEY (ID),
+    UNIQUE KEY UK_MATCHES_PESSOAS (IDPESSOA_1, IDPESSOA_2),
+    KEY IDX_MATCHES_PESSOA_2 (IDPESSOA_2),
+    CONSTRAINT FK_MATCHES_PESSOA_1
+        FOREIGN KEY (IDPESSOA_1) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT FK_MATCHES_PESSOA_2
+        FOREIGN KEY (IDPESSOA_2) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT FK_MATCHES_FOTOS
+        FOREIGN KEY (IDFOTO) REFERENCES FOTOS(ID)
+        ON UPDATE CASCADE ON DELETE SET NULL,
+    CONSTRAINT CK_MATCHES_ORDEM_PESSOAS CHECK (IDPESSOA_1 < IDPESSOA_2)
+) ENGINE=InnoDB
+  COMMENT='Armazena os matches criados a partir de likes mutuos';
+
+CREATE TABLE CONTATOSCHAT (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador unico da conversa',
+    IDMATCH INT NOT NULL COMMENT 'Match que originou a conversa',
+    DATA_CRIACAO DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Data de criacao da conversa',
+    STATUS ENUM('ATIVO', 'ENCERRADO') NOT NULL DEFAULT 'ATIVO' COMMENT 'Situacao da conversa',
+    PRIMARY KEY (ID),
+    UNIQUE KEY UK_CONTATOSCHAT_MATCH (IDMATCH),
+    CONSTRAINT FK_CONTATOSCHAT_MATCHES
+        FOREIGN KEY (IDMATCH) REFERENCES MATCHES(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB
+  COMMENT='Armazena as conversas vinculadas aos matches';
+
+CREATE TABLE MENSAGENS (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador unico da mensagem',
+    IDCONTATOCHAT INT NOT NULL COMMENT 'Conversa a qual a mensagem pertence',
+    IDREMETENTE INT NOT NULL COMMENT 'Pessoa responsavel pelo envio da mensagem',
+    CONTEUDO TEXT NOT NULL COMMENT 'Conteudo textual ou referencia ao conteudo enviado',
+    TIPO ENUM('TEXTO', 'IMAGEM', 'AUDIO', 'ARQUIVO') NOT NULL COMMENT 'Tipo de conteudo enviado',
+    DATAENVIO DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Data e horario do envio',
+    DATALEITURA DATETIME NULL COMMENT 'Data e horario em que a mensagem foi visualizada',
+    STATUS ENUM('ENVIADA', 'ENTREGUE', 'LIDA', 'EXCLUIDA') NOT NULL DEFAULT 'ENVIADA' COMMENT 'Situacao atual da mensagem',
+    PRIMARY KEY (ID),
+    KEY IDX_MENSAGENS_CONTATO_DATA (IDCONTATOCHAT, DATAENVIO),
+    KEY IDX_MENSAGENS_REMETENTE (IDREMETENTE),
+    CONSTRAINT FK_MENSAGENS_CONTATOSCHAT
+        FOREIGN KEY (IDCONTATOCHAT) REFERENCES CONTATOSCHAT(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT FK_MENSAGENS_REMETENTE
+        FOREIGN KEY (IDREMETENTE) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB
+  COMMENT='Armazena as mensagens trocadas entre as pessoas no chat';
+
+/* ============================================================================
+   4. CONDICOES, EMPRESTIMOS E PARCELAS
+   ============================================================================ */
+
+CREATE TABLE CONDICOES (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador das condicoes',
+    IDAGIOTA INT NOT NULL COMMENT 'Agiota responsavel pelas condicoes',
+    CONDICAODESCRICAO TEXT NOT NULL COMMENT 'Descricao das condicoes oferecidas',
+    PORCENTAGEMJUROSMINIMO DECIMAL(5,2) NOT NULL COMMENT 'Percentual minimo de juros',
+    PORCENTAGEMJUROSMAXIMO DECIMAL(5,2) NOT NULL COMMENT 'Percentual maximo de juros',
+    VALORMINIMO DECIMAL(12,2) NOT NULL COMMENT 'Valor minimo do emprestimo',
+    VALORMAXIMO DECIMAL(12,2) NOT NULL COMMENT 'Valor maximo do emprestimo',
+    GRAUAGRESSIVIDADE ENUM('BAIXO', 'MEDIO', 'ALTO') NOT NULL COMMENT 'Nivel de agressividade',
+    PRIMARY KEY (ID),
+    KEY IDX_CONDICOES_AGIOTA (IDAGIOTA),
+    CONSTRAINT FK_CONDICOES_PESSOAS
+        FOREIGN KEY (IDAGIOTA) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT CK_CONDICOES_JUROS CHECK (
+        PORCENTAGEMJUROSMINIMO >= 0 AND
+        PORCENTAGEMJUROSMAXIMO >= PORCENTAGEMJUROSMINIMO
+    ),
+    CONSTRAINT CK_CONDICOES_VALORES CHECK (
+        VALORMINIMO >= 0 AND VALORMAXIMO >= VALORMINIMO
+    )
+) ENGINE=InnoDB
+  COMMENT='Armazena as condicoes oferecidas pelos agiotas';
+
+CREATE TABLE EMPRESTIMOS (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador unico do emprestimo',
+    IDDEVEDOR INT NOT NULL COMMENT 'Pessoa que recebeu o emprestimo',
+    IDAGIOTA INT NOT NULL COMMENT 'Pessoa que concedeu o emprestimo',
+    IDCONDICAO INT NOT NULL COMMENT 'Condicao utilizada no emprestimo',
+    STATUSPAGAMENTO ENUM('PENDENTE', 'EM_ANDAMENTO', 'QUITADO', 'ATRASADO') NOT NULL COMMENT 'Situacao do emprestimo',
+    QUANTIDADEPARCELAS INT NOT NULL COMMENT 'Quantidade de parcelas',
+    VALORTOTAL DECIMAL(12,2) NOT NULL COMMENT 'Valor total a ser pago',
+    TAXAJUROS DECIMAL(5,2) NOT NULL COMMENT 'Percentual de juros aplicado',
+    DATAINICIO DATETIME NOT NULL COMMENT 'Data de concessao do emprestimo',
+    DATAFIM DATETIME NOT NULL COMMENT 'Data prevista para quitacao',
+    PRIMARY KEY (ID),
+    KEY IDX_EMPRESTIMOS_DEVEDOR (IDDEVEDOR),
+    KEY IDX_EMPRESTIMOS_AGIOTA (IDAGIOTA),
+    KEY IDX_EMPRESTIMOS_CONDICAO (IDCONDICAO),
+    CONSTRAINT FK_EMPRESTIMOS_DEVEDOR
+        FOREIGN KEY (IDDEVEDOR) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT FK_EMPRESTIMOS_AGIOTA
+        FOREIGN KEY (IDAGIOTA) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT FK_EMPRESTIMOS_CONDICOES
+        FOREIGN KEY (IDCONDICAO) REFERENCES CONDICOES(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT CK_EMPRESTIMOS_PESSOAS_DIFERENTES CHECK (IDDEVEDOR <> IDAGIOTA),
+    CONSTRAINT CK_EMPRESTIMOS_VALORES CHECK (QUANTIDADEPARCELAS > 0 AND VALORTOTAL >= 0 AND TAXAJUROS >= 0),
+    CONSTRAINT CK_EMPRESTIMOS_DATAS CHECK (DATAFIM >= DATAINICIO)
+) ENGINE=InnoDB
+  COMMENT='Armazena os emprestimos concedidos';
+
+CREATE TABLE PARCELAS (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador unico da parcela',
+    IDEMPRESTIMO INT NOT NULL COMMENT 'Emprestimo ao qual pertence a parcela',
+    STATUSPAGAMENTO ENUM('PENDENTE', 'PAGO', 'ATRASADO') NOT NULL COMMENT 'Situacao da parcela',
+    VALORPARCELA DECIMAL(12,2) NOT NULL COMMENT 'Valor da parcela',
+    DATAVENCIMENTO DATE NOT NULL COMMENT 'Data de vencimento',
+    DATAPAGAMENTO DATETIME NULL COMMENT 'Data e horario do pagamento',
+    PRIMARY KEY (ID),
+    KEY IDX_PARCELAS_EMPRESTIMO (IDEMPRESTIMO),
+    KEY IDX_PARCELAS_VENCIMENTO (DATAVENCIMENTO),
+    CONSTRAINT FK_PARCELAS_EMPRESTIMOS
+        FOREIGN KEY (IDEMPRESTIMO) REFERENCES EMPRESTIMOS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT CK_PARCELAS_VALOR CHECK (VALORPARCELA >= 0)
+) ENGINE=InnoDB
+  COMMENT='Armazena as parcelas dos emprestimos';
+
+/* ============================================================================
+   5. INTERACOES E AVALIACOES
+   ============================================================================ */
+
+CREATE TABLE INTERACOES (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador da interacao',
+    IDENVIADOR INT NOT NULL COMMENT 'Pessoa que enviou a interacao',
+    IDRECEBEDOR INT NOT NULL COMMENT 'Pessoa que recebeu a interacao',
+    REACAO VARCHAR(50) NOT NULL COMMENT 'Tipo de reacao realizada',
+    DATA_INTERACAO DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Data e horario da interacao',
+    PRIMARY KEY (ID),
+    KEY IDX_INTERACOES_ENVIADOR (IDENVIADOR),
+    KEY IDX_INTERACOES_RECEBEDOR (IDRECEBEDOR),
+    CONSTRAINT FK_INTERACOES_ENVIADOR
+        FOREIGN KEY (IDENVIADOR) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT FK_INTERACOES_RECEBEDOR
+        FOREIGN KEY (IDRECEBEDOR) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT CK_INTERACOES_PESSOAS_DIFERENTES CHECK (IDENVIADOR <> IDRECEBEDOR)
+) ENGINE=InnoDB
+  COMMENT='Registra as interacoes entre pessoas';
+
+CREATE TABLE AVALIACOESMOTIVOS (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador do motivo',
+    TIPO VARCHAR(30) NOT NULL COMMENT 'Categoria do motivo',
+    TITULO VARCHAR(100) NOT NULL COMMENT 'Nome do motivo',
+    PRIMARY KEY (ID)
+) ENGINE=InnoDB
+  COMMENT='Armazena os motivos de avaliacao';
+
+CREATE TABLE AVALIACOES (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador da avaliacao',
+    IDEMPRESTIMO INT NOT NULL COMMENT 'Emprestimo relacionado a avaliacao',
+    IDAVALIADO INT NOT NULL COMMENT 'Pessoa que recebeu a avaliacao',
+    IDAVALIANTE INT NOT NULL COMMENT 'Pessoa que realizou a avaliacao',
+    IDMOTIVO INT NOT NULL COMMENT 'Motivo da avaliacao',
+    NOTA INT NOT NULL COMMENT 'Nota atribuida a pessoa',
+    OBSERVACAO TEXT NULL COMMENT 'Comentarios adicionais',
+    PRIMARY KEY (ID),
+    KEY IDX_AVALIACOES_EMPRESTIMO (IDEMPRESTIMO),
+    KEY IDX_AVALIACOES_AVALIADO (IDAVALIADO),
+    KEY IDX_AVALIACOES_AVALIANTE (IDAVALIANTE),
+    KEY IDX_AVALIACOES_MOTIVO (IDMOTIVO),
+    CONSTRAINT FK_AVALIACOES_EMPRESTIMOS
+        FOREIGN KEY (IDEMPRESTIMO) REFERENCES EMPRESTIMOS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT FK_AVALIACOES_AVALIADO
+        FOREIGN KEY (IDAVALIADO) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT FK_AVALIACOES_AVALIANTE
+        FOREIGN KEY (IDAVALIANTE) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT FK_AVALIACOES_MOTIVOS
+        FOREIGN KEY (IDMOTIVO) REFERENCES AVALIACOESMOTIVOS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT CK_AVALIACOES_PESSOAS_DIFERENTES CHECK (IDAVALIADO <> IDAVALIANTE)
+) ENGINE=InnoDB
+  COMMENT='Armazena as avaliacoes realizadas entre pessoas';
+
+/* ============================================================================
+   6. PACOTES E UTILIZACAO
+   ============================================================================ */
+
+CREATE TABLE PACOTES (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador do pacote',
+    TIPO VARCHAR(50) NOT NULL COMMENT 'Modalidade do pacote',
+    BENEFICIOS TEXT NULL COMMENT 'Beneficios oferecidos',
+    VALOR DECIMAL(12,2) NOT NULL COMMENT 'Preco do pacote',
+    LIKES INT NOT NULL COMMENT 'Quantidade de curtidas disponibilizadas',
+    SUPERLIKES INT NOT NULL COMMENT 'Quantidade de supercurtidas disponibilizadas',
+    BOOSTES INT NOT NULL COMMENT 'Quantidade de impulsionamentos disponibilizados',
+    PRIMARY KEY (ID),
+    CONSTRAINT CK_PACOTES_VALOR CHECK (VALOR >= 0),
+    CONSTRAINT CK_PACOTES_QUANTIDADES CHECK (LIKES >= 0 AND SUPERLIKES >= 0 AND BOOSTES >= 0)
+) ENGINE=InnoDB
+  COMMENT='Armazena os pacotes disponibilizados';
+
+CREATE TABLE USOPACOTES (
+    ID INT NOT NULL AUTO_INCREMENT COMMENT 'Identificador da utilizacao do pacote',
+    IDPESSOA INT NOT NULL COMMENT 'Pessoa que utiliza o pacote',
+    IDTIPOPACOTE INT NOT NULL COMMENT 'Pacote adquirido',
+    LIKESUSADO INT NOT NULL DEFAULT 0 COMMENT 'Quantidade de curtidas utilizadas',
+    SUPERLIKESUSADO INT NOT NULL DEFAULT 0 COMMENT 'Quantidade de supercurtidas utilizadas',
+    BOOSTESUSADOS INT NOT NULL DEFAULT 0 COMMENT 'Quantidade de impulsionamentos utilizados',
+    STATUS ENUM('ATIVO', 'EXPIRADO', 'CANCELADO') NOT NULL DEFAULT 'ATIVO' COMMENT 'Situacao do pacote',
+    PRIMARY KEY (ID),
+    KEY IDX_USOPACOTES_PESSOA (IDPESSOA),
+    KEY IDX_USOPACOTES_PACOTE (IDTIPOPACOTE),
+    CONSTRAINT FK_USOPACOTES_PESSOAS
+        FOREIGN KEY (IDPESSOA) REFERENCES PESSOAS(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT FK_USOPACOTES_PACOTES
+        FOREIGN KEY (IDTIPOPACOTE) REFERENCES PACOTES(ID)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT CK_USOPACOTES_QUANTIDADES CHECK (
+        LIKESUSADO >= 0 AND SUPERLIKESUSADO >= 0 AND BOOSTESUSADOS >= 0
+    )
+) ENGINE=InnoDB
+  COMMENT='Registra a utilizacao dos pacotes pelas pessoas';
+
+/* ============================================================================
+   7. HISTORICO DE ALTERACOES
+   A tabela registra operacoes de INSERT, UPDATE e DELETE nas tabelas principais.
+   O historico nao possui FK intencionalmente, para continuar existindo mesmo
+   quando o registro original for excluido.
+   ============================================================================ */
+
+CREATE TABLE HISTORICO_ALTERACOES (
+    ID BIGINT NOT NULL AUTO_INCREMENT COMMENT 'Identificador do registro de historico',
+    TABELA VARCHAR(64) NOT NULL COMMENT 'Tabela que sofreu a alteracao',
+    ID_REGISTRO INT NOT NULL COMMENT 'ID do registro afetado na tabela original',
+    OPERACAO ENUM('INSERT', 'UPDATE', 'DELETE') NOT NULL COMMENT 'Tipo da operacao realizada',
+    DATA_HORA DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Data e horario da operacao',
+    USUARIO_BD VARCHAR(288) NOT NULL COMMENT 'Usuario conectado ao banco no momento da operacao',
+    DADOS_ANTERIORES JSON NULL COMMENT 'Dados anteriores a alteracao, quando existirem',
+    DADOS_NOVOS JSON NULL COMMENT 'Dados novos apos a alteracao, quando existirem',
+    PRIMARY KEY (ID),
+    KEY IDX_HISTORICO_TABELA_REGISTRO (TABELA, ID_REGISTRO),
+    KEY IDX_HISTORICO_DATA_HORA (DATA_HORA)
+) ENGINE=InnoDB
+  COMMENT='Registra alteracoes realizadas nas tabelas principais';
+
+/* ============================================================================
+   8. TRIGGERS
+   ============================================================================ */
+
+DELIMITER $$
+
+/* Desativa a conta de acesso quando a pessoa e desativada. */
+CREATE TRIGGER TPESSOAS_DESATIVAR_USUARIO
+AFTER UPDATE ON PESSOAS
+FOR EACH ROW
+BEGIN
+    IF OLD.STATUS = 'ATIVO' AND NEW.STATUS = 'DESATIVADO' THEN
+        UPDATE USUARIOS
+           SET STATUS = 'INATIVO'
+         WHERE IDPESSOA = NEW.ID;
+    END IF;
+END$$
+
+/* Historico de PESSOAS. */
+CREATE TRIGGER TPESSOAS_AUDITORIA_AI
+AFTER INSERT ON PESSOAS
+FOR EACH ROW
+BEGIN
+    INSERT INTO HISTORICO_ALTERACOES
+        (TABELA, ID_REGISTRO, OPERACAO, USUARIO_BD, DADOS_NOVOS)
+    VALUES
+        ('PESSOAS', NEW.ID, 'INSERT', USER(),
+         JSON_OBJECT('NOME', NEW.NOME, 'TELEFONE', NEW.TELEFONE,
+                     'IDREGIAO', NEW.IDREGIAO, 'TIPO', NEW.TIPO,
+                     'STATUS', NEW.STATUS));
+END$$
+
+CREATE TRIGGER TPESSOAS_AUDITORIA_AU
+AFTER UPDATE ON PESSOAS
+FOR EACH ROW
+BEGIN
+    INSERT INTO HISTORICO_ALTERACOES
+        (TABELA, ID_REGISTRO, OPERACAO, USUARIO_BD, DADOS_ANTERIORES, DADOS_NOVOS)
+    VALUES
+        ('PESSOAS', NEW.ID, 'UPDATE', USER(),
+         JSON_OBJECT('NOME', OLD.NOME, 'TELEFONE', OLD.TELEFONE,
+                     'IDREGIAO', OLD.IDREGIAO, 'TIPO', OLD.TIPO,
+                     'STATUS', OLD.STATUS),
+         JSON_OBJECT('NOME', NEW.NOME, 'TELEFONE', NEW.TELEFONE,
+                     'IDREGIAO', NEW.IDREGIAO, 'TIPO', NEW.TIPO,
+                     'STATUS', NEW.STATUS));
+END$$
+
+CREATE TRIGGER TPESSOAS_AUDITORIA_AD
+AFTER DELETE ON PESSOAS
+FOR EACH ROW
+BEGIN
+    INSERT INTO HISTORICO_ALTERACOES
+        (TABELA, ID_REGISTRO, OPERACAO, USUARIO_BD, DADOS_ANTERIORES)
+    VALUES
+        ('PESSOAS', OLD.ID, 'DELETE', USER(),
+         JSON_OBJECT('NOME', OLD.NOME, 'TELEFONE', OLD.TELEFONE,
+                     'IDREGIAO', OLD.IDREGIAO, 'TIPO', OLD.TIPO,
+                     'STATUS', OLD.STATUS));
+END$$
+
+/* Historico de EMPRESTIMOS. */
+CREATE TRIGGER TEMPRESTIMOS_AUDITORIA_AI
+AFTER INSERT ON EMPRESTIMOS
+FOR EACH ROW
+BEGIN
+    INSERT INTO HISTORICO_ALTERACOES
+        (TABELA, ID_REGISTRO, OPERACAO, USUARIO_BD, DADOS_NOVOS)
+    VALUES
+        ('EMPRESTIMOS', NEW.ID, 'INSERT', USER(),
+         JSON_OBJECT('IDDEVEDOR', NEW.IDDEVEDOR, 'IDAGIOTA', NEW.IDAGIOTA,
+                     'IDCONDICAO', NEW.IDCONDICAO, 'STATUSPAGAMENTO', NEW.STATUSPAGAMENTO,
+                     'QUANTIDADEPARCELAS', NEW.QUANTIDADEPARCELAS,
+                     'VALORTOTAL', NEW.VALORTOTAL, 'TAXAJUROS', NEW.TAXAJUROS,
+                     'DATAINICIO', NEW.DATAINICIO, 'DATAFIM', NEW.DATAFIM));
+END$$
+
+CREATE TRIGGER TEMPRESTIMOS_AUDITORIA_AU
+AFTER UPDATE ON EMPRESTIMOS
+FOR EACH ROW
+BEGIN
+    INSERT INTO HISTORICO_ALTERACOES
+        (TABELA, ID_REGISTRO, OPERACAO, USUARIO_BD, DADOS_ANTERIORES, DADOS_NOVOS)
+    VALUES
+        ('EMPRESTIMOS', NEW.ID, 'UPDATE', USER(),
+         JSON_OBJECT('IDDEVEDOR', OLD.IDDEVEDOR, 'IDAGIOTA', OLD.IDAGIOTA,
+                     'IDCONDICAO', OLD.IDCONDICAO, 'STATUSPAGAMENTO', OLD.STATUSPAGAMENTO,
+                     'QUANTIDADEPARCELAS', OLD.QUANTIDADEPARCELAS,
+                     'VALORTOTAL', OLD.VALORTOTAL, 'TAXAJUROS', OLD.TAXAJUROS,
+                     'DATAINICIO', OLD.DATAINICIO, 'DATAFIM', OLD.DATAFIM),
+         JSON_OBJECT('IDDEVEDOR', NEW.IDDEVEDOR, 'IDAGIOTA', NEW.IDAGIOTA,
+                     'IDCONDICAO', NEW.IDCONDICAO, 'STATUSPAGAMENTO', NEW.STATUSPAGAMENTO,
+                     'QUANTIDADEPARCELAS', NEW.QUANTIDADEPARCELAS,
+                     'VALORTOTAL', NEW.VALORTOTAL, 'TAXAJUROS', NEW.TAXAJUROS,
+                     'DATAINICIO', NEW.DATAINICIO, 'DATAFIM', NEW.DATAFIM));
+END$$
+
+CREATE TRIGGER TEMPRESTIMOS_AUDITORIA_AD
+AFTER DELETE ON EMPRESTIMOS
+FOR EACH ROW
+BEGIN
+    INSERT INTO HISTORICO_ALTERACOES
+        (TABELA, ID_REGISTRO, OPERACAO, USUARIO_BD, DADOS_ANTERIORES)
+    VALUES
+        ('EMPRESTIMOS', OLD.ID, 'DELETE', USER(),
+         JSON_OBJECT('IDDEVEDOR', OLD.IDDEVEDOR, 'IDAGIOTA', OLD.IDAGIOTA,
+                     'IDCONDICAO', OLD.IDCONDICAO, 'STATUSPAGAMENTO', OLD.STATUSPAGAMENTO,
+                     'QUANTIDADEPARCELAS', OLD.QUANTIDADEPARCELAS,
+                     'VALORTOTAL', OLD.VALORTOTAL, 'TAXAJUROS', OLD.TAXAJUROS,
+                     'DATAINICIO', OLD.DATAINICIO, 'DATAFIM', OLD.DATAFIM));
+END$$
+
+/* Historico de PARCELAS. */
+CREATE TRIGGER TPARCELAS_AUDITORIA_AI
+AFTER INSERT ON PARCELAS
+FOR EACH ROW
+BEGIN
+    INSERT INTO HISTORICO_ALTERACOES
+        (TABELA, ID_REGISTRO, OPERACAO, USUARIO_BD, DADOS_NOVOS)
+    VALUES
+        ('PARCELAS', NEW.ID, 'INSERT', USER(),
+         JSON_OBJECT('IDEMPRESTIMO', NEW.IDEMPRESTIMO,
+                     'STATUSPAGAMENTO', NEW.STATUSPAGAMENTO,
+                     'VALORPARCELA', NEW.VALORPARCELA,
+                     'DATAVENCIMENTO', NEW.DATAVENCIMENTO,
+                     'DATAPAGAMENTO', NEW.DATAPAGAMENTO));
+END$$
+
+CREATE TRIGGER TPARCELAS_AUDITORIA_AU
+AFTER UPDATE ON PARCELAS
+FOR EACH ROW
+BEGIN
+    INSERT INTO HISTORICO_ALTERACOES
+        (TABELA, ID_REGISTRO, OPERACAO, USUARIO_BD, DADOS_ANTERIORES, DADOS_NOVOS)
+    VALUES
+        ('PARCELAS', NEW.ID, 'UPDATE', USER(),
+         JSON_OBJECT('IDEMPRESTIMO', OLD.IDEMPRESTIMO,
+                     'STATUSPAGAMENTO', OLD.STATUSPAGAMENTO,
+                     'VALORPARCELA', OLD.VALORPARCELA,
+                     'DATAVENCIMENTO', OLD.DATAVENCIMENTO,
+                     'DATAPAGAMENTO', OLD.DATAPAGAMENTO),
+         JSON_OBJECT('IDEMPRESTIMO', NEW.IDEMPRESTIMO,
+                     'STATUSPAGAMENTO', NEW.STATUSPAGAMENTO,
+                     'VALORPARCELA', NEW.VALORPARCELA,
+                     'DATAVENCIMENTO', NEW.DATAVENCIMENTO,
+                     'DATAPAGAMENTO', NEW.DATAPAGAMENTO));
+END$$
+
+CREATE TRIGGER TPARCELAS_AUDITORIA_AD
+AFTER DELETE ON PARCELAS
+FOR EACH ROW
+BEGIN
+    INSERT INTO HISTORICO_ALTERACOES
+        (TABELA, ID_REGISTRO, OPERACAO, USUARIO_BD, DADOS_ANTERIORES)
+    VALUES
+        ('PARCELAS', OLD.ID, 'DELETE', USER(),
+         JSON_OBJECT('IDEMPRESTIMO', OLD.IDEMPRESTIMO,
+                     'STATUSPAGAMENTO', OLD.STATUSPAGAMENTO,
+                     'VALORPARCELA', OLD.VALORPARCELA,
+                     'DATAVENCIMENTO', OLD.DATAVENCIMENTO,
+                     'DATAPAGAMENTO', OLD.DATAPAGAMENTO));
+END$$
+
+/* Gera um match quando existem likes nos dois sentidos. */
+CREATE TRIGGER TLIKES_GERAR_MATCH
+AFTER INSERT ON LIKES
+FOR EACH ROW
+BEGIN
+    IF EXISTS (
+        SELECT 1
+          FROM LIKES L
+         WHERE L.IDPESSOA_LIKE = NEW.IDPESSOA_RECEBEU
+           AND L.IDPESSOA_RECEBEU = NEW.IDPESSOA_LIKE
+    ) THEN
+        INSERT IGNORE INTO MATCHES (IDPESSOA_1, IDPESSOA_2)
+        VALUES (
+            LEAST(NEW.IDPESSOA_LIKE, NEW.IDPESSOA_RECEBEU),
+            GREATEST(NEW.IDPESSOA_LIKE, NEW.IDPESSOA_RECEBEU)
+        );
+    END IF;
+END$$
+
+/* Cria automaticamente uma conversa para cada novo match. */
+CREATE TRIGGER TMATCHES_CRIAR_CHAT
+AFTER INSERT ON MATCHES
+FOR EACH ROW
+BEGIN
+    INSERT INTO CONTATOSCHAT (IDMATCH) VALUES (NEW.ID);
+END$$
+
+/* Impede que uma pessoa de fora do match envie mensagem naquela conversa. */
+CREATE TRIGGER TMENSAGENS_VALIDAR_REMETENTE
+BEFORE INSERT ON MENSAGENS
+FOR EACH ROW
+BEGIN
+    DECLARE V_PESSOA_1 INT;
+    DECLARE V_PESSOA_2 INT;
+
+    SELECT M.IDPESSOA_1, M.IDPESSOA_2
+      INTO V_PESSOA_1, V_PESSOA_2
+      FROM CONTATOSCHAT C
+      INNER JOIN MATCHES M ON M.ID = C.IDMATCH
+     WHERE C.ID = NEW.IDCONTATOCHAT;
+
+    IF NEW.IDREMETENTE <> V_PESSOA_1 AND NEW.IDREMETENTE <> V_PESSOA_2 THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'O remetente nao participa desta conversa.';
+    END IF;
+END$$
+
+DELIMITER ;
+
+/* ============================================================================
+   9. VIEWS DE INTEGRACAO ENTRE SISTEMAS
+   ============================================================================ */
+
+CREATE OR REPLACE VIEW VW_PERFIL_PESSOAS AS
+SELECT
+    P.ID AS IDPESSOA,
+    P.NOME,
+    P.TELEFONE,
+    P.TIPO,
+    P.STATUS,
+    R.CIDADE,
+    R.UF,
+    R.PAIS,
+    COUNT(DISTINCT B.ID) AS QUANTIDADE_BENS,
+    COUNT(DISTINCT F.ID) AS QUANTIDADE_FOTOS
+FROM PESSOAS P
+INNER JOIN REGIOES R ON R.ID = P.IDREGIAO
+LEFT JOIN BENS B ON B.IDPESSOA = P.ID
+LEFT JOIN FOTOS F ON F.IDPESSOA = P.ID
+GROUP BY
+    P.ID, P.NOME, P.TELEFONE, P.TIPO, P.STATUS,
+    R.CIDADE, R.UF, R.PAIS;
+
+CREATE OR REPLACE VIEW VW_EMPRESTIMOS_DETALHADOS AS
+SELECT
+    E.ID AS IDEMPRESTIMO,
+    D.ID AS IDDEVEDOR,
+    D.NOME AS NOME_DEVEDOR,
+    A.ID AS IDAGIOTA,
+    A.NOME AS NOME_AGIOTA,
+    C.ID AS IDCONDICAO,
+    C.CONDICAODESCRICAO,
+    E.STATUSPAGAMENTO,
+    E.QUANTIDADEPARCELAS,
+    E.VALORTOTAL,
+    E.TAXAJUROS,
+    E.DATAINICIO,
+    E.DATAFIM,
+    COUNT(PA.ID) AS PARCELAS_CADASTRADAS,
+    SUM(CASE WHEN PA.STATUSPAGAMENTO = 'PAGO' THEN PA.VALORPARCELA ELSE 0 END) AS VALOR_PAGO
+FROM EMPRESTIMOS E
+INNER JOIN PESSOAS D ON D.ID = E.IDDEVEDOR
+INNER JOIN PESSOAS A ON A.ID = E.IDAGIOTA
+INNER JOIN CONDICOES C ON C.ID = E.IDCONDICAO
+LEFT JOIN PARCELAS PA ON PA.IDEMPRESTIMO = E.ID
+GROUP BY
+    E.ID, D.ID, D.NOME, A.ID, A.NOME, C.ID, C.CONDICAODESCRICAO,
+    E.STATUSPAGAMENTO, E.QUANTIDADEPARCELAS, E.VALORTOTAL,
+    E.TAXAJUROS, E.DATAINICIO, E.DATAFIM;
+
+/* ============================================================================
+   10. CONSULTAS PARA CONFERENCIA
+   Execute estas consultas depois de executar o script:
+
+   SHOW TABLES;
+   SHOW FULL TABLES WHERE TABLE_TYPE = 'VIEW';
+   SHOW TRIGGERS;
+   SELECT * FROM VW_PERFIL_PESSOAS;
+   SELECT * FROM VW_EMPRESTIMOS_DETALHADOS;
+   SELECT * FROM HISTORICO_ALTERACOES ORDER BY DATA_HORA DESC;
+   ============================================================================ */
+
+/* ============================================================================
+   11. BACKUP E BINLOGS - COMANDOS COMPLEMENTARES (NAO SAO SQL)
+
+   Backup logico completo, executado no terminal do sistema:
+   mysqldump -u USUARIO -p --databases TIBURON --routines --triggers --events > tiburon_backup.sql
+
+   Restauracao do backup, executada no terminal:
+   mysql -u USUARIO -p < tiburon_backup.sql
+
+   Verificar pelo SQL se o servidor possui binlog habilitado:
+   SHOW VARIABLES LIKE 'log_bin';
+   SHOW VARIABLES LIKE 'binlog_format';
+   SHOW BINARY LOGS;
+
+   A ativacao do log_bin normalmente exige configuracao no arquivo de configuracao
+   do MySQL e reinicializacao do servico. A recuperacao ponto a ponto utiliza a
+   ferramenta mysqlbinlog no terminal; nao pode ser implementada apenas com SQL.
+
+   A replicacao para um segundo servidor tambem exige configuracao dos servidores,
+   usuarios/permissoes de replicacao e parametros de rede. Este script nao cria
+   nem configura um servidor replica.
+   ============================================================================ */
+
+/* FIM DO SCRIPT TIBURON */
