@@ -1,6 +1,6 @@
 # PLANO DE BACKUP — TIBURÓN
 
----
+
 
 ## 1. Objetivo
 
@@ -81,7 +81,3 @@ mysql -u USUARIO -p < tiburon_backup.sql
 ```
 
 Quando necessário, as alterações posteriores ao backup deverão ser reaplicadas a partir dos arquivos incrementais e dos binlogs, conforme o procedimento definido no Plano de Recuperação de Desastres.
-
----
-
-**Tiburón — Plano de Backup**
